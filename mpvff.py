@@ -6,13 +6,35 @@ import json
 import struct
 import typing
 import dataclasses
+import subprocess
+
+"""
+globals
+"""
+
+mpv_ipc_file: str = "/tmp/mpvff-socket"
 
 
 @dataclasses.dataclass
 class MpvResponse:
     request: str
     successful: bool
-    info: str
+    url: str = ""
+    info: str = ""
+
+    def generate(self) -> typing.Dict[str, typing.Any]:
+        """
+        Generate a json dict from the class
+        currently only allows flat json objects, empty strings are removed
+        """
+        jDict: typing.Dict[str, typing.Any] = {}
+        for k, v in vars(self).items():
+            if isinstance(v, (bool, int)):
+                jDict[k] = v
+            elif isinstance(v, (str)):
+                if len(v) > 0:
+                    jDict[k] = v
+        return jDict
 
 
 @dataclasses.dataclass
@@ -22,6 +44,7 @@ class MpvRequest:
     """
     request: str
     url: str
+    id: int
 
     def process(self) -> MpvResponse:
         """processes the request """
@@ -32,12 +55,57 @@ class MpvRequest:
         return call(self)
 
     def _check(self) -> MpvResponse:
-        """TODO"""
-        return self.__generalError()
+        """
+        Calls youtube-dl without actually downloading the content
+        to check if the url is valid.
+        """
+        try:
+            youtube_dl_call: typing.List[str] = [
+                    "youtube-dl",
+                    "--quiet",
+                    "--skip-download",
+                    self.url
+                    ]
+            subprocess.check_call(
+                    youtube_dl_call,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                    )
+            return MpvResponse(
+                    request=self.request,
+                    successful=True,
+                    url=self.url,
+                    info="Valid url"
+                    )
+
+        except Exception as e:
+            return MpvResponse(
+                    request=self.request,
+                    successful=False,
+                    url=self.url,
+                    info="No playable content found"
+                    )
 
     def _play(self) -> MpvResponse:
-        """TODO"""
-        return self.__generalError()
+        """
+        Starts mpv with the given url
+        """
+        try:
+            spawn(self.url)
+            return MpvResponse(
+                    request=self.request,
+                    successful=True,
+                    url=self.url,
+                    info="sent to mpv"
+                    )
+        except Exception as e:
+            return MpvResponse(
+                    request=self.request,
+                    successful=False,
+                    url=self.url,
+                    info="failed to launch mpv"
+                    )
 
     def __generalError(self) -> MpvResponse:
         """ invaldi request """
@@ -66,8 +134,15 @@ unparsable error response
 unparsable_response: MpvResponse = MpvResponse(
         request="invalid",
         successful=False,
-        info="could not parse request"
+        info="failed to parse request"
         )
+
+
+def error(*args, **kwargs) -> None:
+    """
+    Prints to stderr
+    """
+    print(*args, file=sys.stderr, **kwargs)
 
 
 def getMessage() -> typing.Dict[str, str]:
@@ -83,7 +158,7 @@ def getMessage() -> typing.Dict[str, str]:
     return json.loads(message)
 
 
-def senMessage(message: typing.Dict[str, str]) -> int:
+def sendMessage(message: typing.Dict[str, str]) -> int:
     """
     takes a python dict, converts it to a json string and sends it to
     stdout
@@ -94,14 +169,22 @@ def senMessage(message: typing.Dict[str, str]) -> int:
     return sys.stdout.buffer.write(bytes(raw, 'utf-8')) + len(messageLength)
 
 
-def launch_mpv(url: str) -> None:
+def launch_mpv(url: str, id: int) -> None:
     """
     launches mpv. This will replace the the current process.
     """
-    os.execvp("mpv", ("mpv", "--no-terminal", url))
+    os.execvp(
+        "mpv",
+        (
+            "mpv",
+            "--no-terminal",
+            "--input-ipc-server={}".format(mpv_ipc_file + ".{}".format(id)),
+            url
+        )
+    )
 
 
-def spawn(url: str) -> None:
+def spawn(url: str, id: int) -> None:
     """
     Forks a new process, then detaches the new one and launches mpv with the
     provided url.
@@ -137,7 +220,8 @@ if __name__ == "__main__":
         message = getMessage()
         req = MpvRequest(**message)
         response = req.process()
+        sendMessage(response.generate())
     except Exception:
-        senMessage(vars(unparsable_response))
+        sendMessage(unparsable_response.generate())
 
     exit(0)
